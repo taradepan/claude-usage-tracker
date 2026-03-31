@@ -12,7 +12,7 @@ import rumps
 CC_KEYCHAIN_SERVICE = "Claude Code-credentials"
 OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 OAUTH_BETA_HEADER = "oauth-2025-04-20"
-POLL_INTERVAL = 60
+POLL_INTERVAL = 90
 CLAUDE_ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.png")
 
 _claude_version_cache = None
@@ -161,12 +161,16 @@ class ClaudeUsageApp(rumps.App):
         self._http = requests.Session()
         self._cached_creds = None
         self._fetch_lock = threading.Lock()
+        self._skip_until = 0  # epoch time — skip polls until this time (rate limit backoff)
 
         self.timer = rumps.Timer(self._poll, POLL_INTERVAL)
         self.timer.start()
         threading.Thread(target=self._fetch_and_update, daemon=True).start()
 
     def _poll(self, _):
+        import time
+        if time.time() < self._skip_until:
+            return
         threading.Thread(target=self._fetch_and_update, daemon=True).start()
 
     def _set_labels(self, title, session="", bar="", weekly="", extra="", plan=""):
@@ -263,21 +267,27 @@ class ClaudeUsageApp(rumps.App):
                 plan=plan_text,
             )
 
-        except requests.exceptions.HTTPError as e:
-            code = e.response.status_code if e.response else "?"
-            if code == 401:
-                self._cached_creds = None
-                self._set_labels(title=" !", session="Unauthorized - run `claude` to re-auth")
-            elif code == 429:
-                pass  # rate limited — keep last known data
-            else:
-                self._set_labels(title=" err", session=f"API error: HTTP {code}")
-        except requests.exceptions.ConnectionError:
-            self._set_labels(title=" --", session="No internet connection")
         except Exception as e:
-            self._set_labels(title=" err", session=f"Error: {str(e)[:60]}")
+            import time
+            if hasattr(e, "response") and hasattr(e.response, "status_code"):
+                code = e.response.status_code
+                if code == 401:
+                    self._cached_creds = None
+                if code == 429:
+                    retry_after = int(e.response.headers.get("Retry-After", 0)) or 300
+                    self._skip_until = time.time() + retry_after
+                    self.session_bar.title = f"Error: HTTP 429 (retry in {retry_after}s)"
+                else:
+                    self.session_bar.title = f"Error: HTTP {code}"
+            elif isinstance(e, requests.exceptions.ConnectionError):
+                self.session_bar.title = "Error: no connection"
+            elif isinstance(e, requests.exceptions.Timeout):
+                self.session_bar.title = "Error: request timed out"
+            else:
+                self.session_bar.title = f"Error: {type(e).__name__}"
 
     def on_refresh(self, _):
+        self._skip_until = 0
         self.title = " ..."
         self._cached_creds = None
         threading.Thread(target=self._fetch_and_update, daemon=True).start()
