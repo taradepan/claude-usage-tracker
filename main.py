@@ -12,7 +12,7 @@ import rumps
 CC_KEYCHAIN_SERVICE = "Claude Code-credentials"
 OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 OAUTH_BETA_HEADER = "oauth-2025-04-20"
-POLL_INTERVAL = 90
+POLL_INTERVAL = 120
 CLAUDE_ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.png")
 
 _claude_version_cache = None
@@ -162,6 +162,8 @@ class ClaudeUsageApp(rumps.App):
         self._cached_creds = None
         self._fetch_lock = threading.Lock()
         self._skip_until = 0  # epoch time — skip polls until this time (rate limit backoff)
+        self._backoff = 0  # current backoff level for consecutive 429s
+        self._last_fetch = 0  # epoch time of last API call
 
         self.timer = rumps.Timer(self._poll, POLL_INTERVAL)
         self.timer.start()
@@ -169,7 +171,8 @@ class ClaudeUsageApp(rumps.App):
 
     def _poll(self, _):
         import time
-        if time.time() < self._skip_until:
+        now = time.time()
+        if now < self._skip_until or (now - self._last_fetch) < POLL_INTERVAL:
             return
         threading.Thread(target=self._fetch_and_update, daemon=True).start()
 
@@ -217,7 +220,10 @@ class ClaudeUsageApp(rumps.App):
                 )
                 return
 
+            import time
+            self._last_fetch = time.time()
             data = fetch_usage(self._http, creds["access_token"])
+            self._backoff = 0  # reset on success
 
             five_hour = data.get("five_hour") or {}
             session_pct = five_hour.get("utilization")
@@ -274,22 +280,42 @@ class ClaudeUsageApp(rumps.App):
                 if code == 401:
                     self._cached_creds = None
                 if code == 429:
-                    retry_after = int(e.response.headers.get("Retry-After", 0)) or 300
-                    self._skip_until = time.time() + retry_after
-                    self.session_bar.title = f"Error: HTTP 429 (retry in {retry_after}s)"
+                    self._backoff = min(self._backoff + 1, 6)  # max ~96 min
+                    retry_after = int(e.response.headers.get("Retry-After", 0))
+                    backoff_secs = max(retry_after, POLL_INTERVAL * (2 ** self._backoff))
+                    self._skip_until = time.time() + backoff_secs
+                    wait_label = f"{backoff_secs // 60}m" if backoff_secs >= 60 else f"{backoff_secs}s"
+                    self._set_labels(
+                        title=" 429",
+                        session="Rate limited",
+                        bar=f"Retrying in {wait_label}...",
+                        weekly=self.weekly_label.title,
+                    )
                 else:
-                    self.session_bar.title = f"Error: HTTP {code}"
+                    self._set_labels(
+                        title=" err",
+                        session=f"Error: HTTP {code}",
+                        bar="Will retry next poll",
+                    )
             elif isinstance(e, requests.exceptions.ConnectionError):
-                self.session_bar.title = "Error: no connection"
+                self._set_labels(title=" err", session="Error: no connection", bar="Will retry next poll")
             elif isinstance(e, requests.exceptions.Timeout):
-                self.session_bar.title = "Error: request timed out"
+                self._set_labels(title=" err", session="Error: request timed out", bar="Will retry next poll")
             else:
-                self.session_bar.title = f"Error: {type(e).__name__}"
+                self._set_labels(title=" err", session=f"Error: {type(e).__name__}", bar="Will retry next poll")
 
     def on_refresh(self, _):
         self._skip_until = 0
-        self.title = " ..."
+        self._backoff = 0
         self._cached_creds = None
+        self._set_labels(
+            title=" ...",
+            session="Session (5h): loading...",
+            bar="",
+            weekly="Weekly (7d): loading...",
+            extra="",
+            plan="",
+        )
         threading.Thread(target=self._fetch_and_update, daemon=True).start()
 
     def on_open_usage(self, _):
@@ -300,4 +326,6 @@ class ClaudeUsageApp(rumps.App):
 
 
 if __name__ == "__main__":
+    from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
+    NSApplication.sharedApplication().setActivationPolicy_(NSApplicationActivationPolicyAccessory)
     ClaudeUsageApp().run()
