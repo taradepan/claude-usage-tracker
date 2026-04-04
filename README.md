@@ -1,100 +1,140 @@
 # Claude Usage Tracker
 
-A lightweight macOS menubar app that shows your Claude Code session and weekly usage at a glance.
+A lightweight **macOS menubar app** (Rust) that shows your Claude Code session and weekly usage at a glance.
 
-![macOS](https://img.shields.io/badge/macOS-14%2B-blue) ![Python](https://img.shields.io/badge/python-3.11%2B-green) ![License](https://img.shields.io/badge/license-MIT-gray)
+![macOS](https://img.shields.io/badge/macOS-14%2B-blue) ![Rust](https://img.shields.io/badge/rust-1.85%2B-orange) ![License](https://img.shields.io/badge/license-MIT-gray)
 
 ## What it does
 
-- Shows your **5-hour session usage %** right in the menubar with the Claude icon
-- Dropdown shows session progress bar, weekly usage, reset countdown, extra usage spend, and plan type
-- **Zero config** — reads OAuth tokens directly from Claude Code's macOS Keychain
-- Polls every 60 seconds, uses persistent HTTP connections, caches credentials until they expire
+- Shows your **5-hour session usage %** in the menu bar with the Claude icon
+- Dropdown menu includes:
+  - session usage + reset countdown
+  - weekly usage + reset countdown
+  - progress bar
+  - extra usage spend (if available)
+  - plan type
+- **Zero manual auth setup**: reads Claude Code OAuth credentials from macOS Keychain
+- Polls usage periodically (configurable), with efficient HTTP usage and credential caching
 
 ## How it works
 
-```
-macOS Keychain (Claude Code-credentials)
-    → OAuth access token
-        → GET api.anthropic.com/api/oauth/usage
-            → menubar display
+```text
+macOS Keychain (service: Claude Code-credentials)
+  -> OAuth access token
+  -> GET https://api.anthropic.com/api/oauth/usage
+  -> menu bar + dropdown UI
 ```
 
-No browser cookies, no Cloudflare issues, no API keys needed.
+No API keys, browser cookies, or Cloudflare workarounds required.
 
-## Prerequisites
+## Requirements
 
 - **macOS 14+**
-- **Claude Code** installed and signed in (`claude` CLI available in PATH)
-- **[uv](https://docs.astral.sh/uv/)** package manager
+- **Claude Code CLI** installed and authenticated (`claude` available in `PATH`)
+- **Rust toolchain** (edition 2024 project; rustup/cargo recommended)
 
 ## Quick start
 
 ```bash
 git clone https://github.com/YOUR_USERNAME/claude-usage.git
 cd claude-usage
-
-# Run in background
-./start.sh
-
-# Or run in foreground (see logs directly)
-uv run python main.py
+cargo run --release
 ```
 
-## Auto-start on login
+This launches the tray app in the foreground.
+
+## CLI options
+
+Run the binary directly (or via `cargo run -- ...`):
 
 ```bash
-# Install as a macOS Launch Agent (auto-starts on login, auto-restarts on crash)
-./start.sh --install
+# install LaunchAgent (start on login, restart on crash)
+cargo run --release -- --install
 
-# Remove it
-./start.sh --uninstall
+# remove LaunchAgent
+cargo run --release -- --uninstall
+
+# run app with file logging enabled
+cargo run --release -- --log
 ```
 
-## Commands
+## Build
 
-```
-./start.sh              Start in background
-./start.sh --install    Install as Login Item (auto-start + auto-restart)
-./start.sh --uninstall  Remove Login Item and stop
-./start.sh --stop       Stop running instance
-./start.sh --status     Show current status
-./start.sh --help       Show help
+```bash
+cargo build --release
 ```
 
-## Menubar display
+Binary output will be in:
 
-| Menubar | Meaning |
-|---------|---------|
-| `[icon] 42%` | Session is at 42% of 5-hour limit |
-| `[icon] OK`  | No session limit active |
-| `[icon] --`  | Not signed in or no internet |
-| `[icon] exp` | OAuth token expired — run `claude` to re-auth |
-| `[icon] !`   | API returned 401 |
+```text
+target/release/claude-usage
+```
 
-The dropdown menu shows:
-- **Session (5h):** percentage with reset countdown
-- **Progress bar:** visual representation of session usage
-- **Weekly (7d):** percentage with reset countdown
-- **Extra usage:** dollar amount spent (if enabled on your plan)
-- **Plan:** your subscription type
+## Auto-start on login (LaunchAgent)
 
-## How authentication works
+The app can install/uninstall a user LaunchAgent from the CLI:
 
-Claude Code stores OAuth credentials in the macOS Keychain under the service name `Claude Code-credentials`. This app reads that token using `/usr/bin/security`.
+- `--install`: writes and loads LaunchAgent plist
+- `--uninstall`: unloads and removes it
 
-No API keys, session cookies, or manual configuration required. If your token expires, just run `claude` in your terminal to re-authenticate.
+This is the preferred way to run continuously in the background on macOS.
+
+## Configuration
+
+The app loads configuration at startup (poll interval, notification thresholds, etc.).  
+If no config is present, sane defaults are used.
+
+Typical configurable areas include:
+
+- poll interval (seconds)
+- session usage notification threshold (%)
+- weekly usage notification threshold (%)
+
+## Logging
+
+Use `--log` to enable file logging for easier debugging and monitoring.
+
+## Authentication details
+
+Claude Code stores OAuth credentials in macOS Keychain under:
+
+- service: `Claude Code-credentials`
+
+If authentication expires, re-authenticate by running:
+
+```bash
+claude
+```
+
+Then restart (or let the app refresh on next poll).
 
 ## Project structure
 
-```
+```text
 claude-usage/
-├── main.py        # Menubar app (rumps + requests)
-├── start.sh       # Setup, run, and Launch Agent management
-├── icon.png       # Claude tray icon
-├── pyproject.toml # Dependencies (requests, rumps)
-└── uv.lock        # Lock file
+├── Cargo.toml
+├── README.md
+├── icon.png
+├── src/
+│   ├── main.rs        # entrypoint + CLI arg handling
+│   ├── app.rs         # tray app + menu handling
+│   ├── poller.rs      # periodic usage polling loop
+│   ├── api.rs         # OAuth usage API client
+│   ├── keychain.rs    # macOS keychain token retrieval
+│   ├── config.rs      # config loading/defaults
+│   ├── notify.rs      # user notifications
+│   ├── logging.rs     # logging setup
+│   ├── install.rs     # LaunchAgent install/uninstall
+│   ├── format.rs      # display formatting helpers
+│   └── types.rs       # shared data models
+├── logs/
+└── start.sh           # legacy helper script (older Python flow)
 ```
+
+## Notes
+
+- The current implementation is Rust-based.
+- If you still have old Python-oriented commands in local scripts/docs, prefer the Rust CLI commands above.
 
 ## License
 
